@@ -1,0 +1,140 @@
+<html><head>
+<meta charset="UTF-8">
+<script src="grayscale.js" type="text/javascript"></script>
+</head>
+<body>
+<button id="startAndStop">Start/Pause</button><br/>
+<video id="videoInput"></video>
+<canvas id="canvasOutput"></canvas>
+
+<script type="text/javascript">
+var v = document.getElementById('videoInput');
+var canvas = document.getElementById('canvasOutput');
+var context = canvas.getContext('2d');
+
+var back = document.createElement('canvas');  // create backing canvas
+var backcontext = back.getContext('2d');      // context for backing canvas
+
+var vw, vh;  // video client width/height
+
+
+function wait_for_playing() {
+  if (v.videoWidth == 0 || v.videoHeight == 0) {
+    // schedule to run again and quit
+    console.log('waiting');
+    setTimeout(wait_for_playing, 20);
+    return;
+  }
+  console.log('video nonempty');
+
+  vw = v.videoWidth;
+  vh = v.videoHeight;
+  
+  // it seems that cv.VideoCapture uses height and width, not videoHeight or videoWidth
+  v.height = vh;
+  v.width = vw;
+  
+  canvas.width = vw;    // set output canvas to match
+  canvas.height = vh;
+  back.width = vw;      // set backing canvas to match
+  back.height = vh;
+  
+  // Explicit pixel value handling
+  draw(v, context, backcontext, vw, vh);
+}
+
+var constraints = {
+  video: {
+    width: 640,
+    height: 480,
+    facingMode : "environment",
+  },
+};
+
+// event kicks off waiting.  Waiting reschedules itself until video has nonzero size
+v.addEventListener('play', wait_for_playing, false);
+
+
+// add listener to button to start/stop the video
+var vid_playing = false;
+var startStop = document.getElementById('startAndStop');
+startStop.addEventListener('click', () => {
+  console.log('startstop clicked');
+  if (vid_playing) {
+    v.pause();
+    vid_playing = false;
+  }
+  else if (v.srcObject != null) {  // just unpause
+    v.play();
+    vid_playing = true;
+  }
+  else {
+    //navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+    navigator.mediaDevices.getUserMedia(constraints)
+    .then(function(stream) {
+        v.srcObject = stream;
+        v.play();
+        vid_playing = true;
+    })
+    .catch(function(err) {
+        console.log("An error occurred! " + err);
+    });
+  }
+});
+
+
+// Non-CV method handles pixels explicitly
+function draw(v,c,bc,w,h) {
+  if (v.paused || v.ended) {
+    return false;  // stop looping, (can restart with new 'play' callback on video)
+  }
+  
+  // Draw video into the backing canvas (context)
+  bc.drawImage(v,0,0,w,h);
+  
+  // Grab the pixel data from the backing canvas
+  var idata = bc.getImageData(0,0,w,h);
+  var data = idata.data;
+  
+  if (false) {
+    // javascript method
+    // Loop through the pixels, turning them grayscale
+    for(var i = 0; i < data.length; i+=4) {
+      var r = data[i];
+      var g = data[i+1];
+      var b = data[i+2];
+      var brightness = (3*r+4*g+b)>>>3;
+      data[i] = brightness;
+      data[i+1] = brightness;
+      data[i+2] = brightness;
+    }
+    idata.data = data;
+  }
+  else {
+    // wasm method
+    var data2 = grayscale(data);
+    idata.data.set(data2);
+  }
+  
+  // Draw the pixels onto the visible canvas (context)
+  c.putImageData(idata,0,0);
+  
+  // Schedule another iteration (immediate)
+  setTimeout(function(){ draw(v, c, bc, w, h); }, 0);
+}
+
+
+function grayscale(imageData) {
+  const { length } = imageData;
+  const memory = _malloc(length); // Allocating WASM memory
+  HEAPU8.set(imageData, memory); // Copying JS image data to WASM memory
+  
+  Module._grayScale(memory, length);
+  const filteredImageData = HEAPU8.subarray(memory, memory + length); // Converting WASM data to JS Image data
+  _free(memory); // Freeing WASM memory
+  return filteredImageData;
+};
+
+</script>
+</body>
+</html>
