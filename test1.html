@@ -3,89 +3,154 @@
 <script src="grayscale.js" type="text/javascript"></script>
 </head>
 <body>
-<button id="startAndStop">Start/Pause</button><br/>
+<select id="camOptions">
+<option value="no cameras">None</option>
+</select>
+<br/>
+<button id="startAndStop" disabled=true>Start</button>
+<button id="stopbtn">Stop</button>
+<br/>
 <video id="videoInput"></video>
 <canvas id="canvasOutput"></canvas>
+<br/>
+<pre id="console" class="console">
+</pre>
 
 <script type="text/javascript">
-var v = document.getElementById('videoInput');
-var canvas = document.getElementById('canvasOutput');
-var context = canvas.getContext('2d');
+let v = document.getElementById('videoInput');
+let canvas = document.getElementById('canvasOutput');
+let context = canvas.getContext('2d');
+let back = document.createElement('canvas');  // create backing canvas
+let backcontext = back.getContext('2d');      // context for backing canvas
+let vw, vh;  // video client width/height
+let camOptions = document.getElementById('camOptions');
+let startStop = document.getElementById('startAndStop');
+let stopButton = document.getElementById('stopbtn');
+let vidDevices = [];
 
-var back = document.createElement('canvas');  // create backing canvas
-var backcontext = back.getContext('2d');      // context for backing canvas
+// Step 1, when DOM content is loaded, query for cameras and populate drop-down selector for cameras and enable start button
+document.addEventListener("DOMContentLoaded", function() {
+  UpdateDeviceListDropdown().then(function () {
+    startStop.disabled = false;
+  });
+});
 
-var vw, vh;  // video client width/height
+
+async function UpdateDeviceListDropdown() {
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  console.log(devices);
+  console_append('got devices');
+  console_append('clearing camera options select drop-down');
+  camOptions.options.length = 0;
+  // for each dev in devices
+  devices.forEach(dev => {
+    if (dev.kind == 'videoinput' || dev.kind == 'video') {
+      console_append('including ' + dev.kind + ' device ' + dev.deviceId);
+      curlen = camOptions.options.length;
+      camOptions.options[curlen] = new Option("device " + (curlen+1), dev.deviceId, false, false);
+      vidDevices.push(dev);
+    }
+    else {
+      console_append('excluding ' + dev.kind + ' device');
+    }
+  });
+}
+
+// Step 2, when start button is pressed, perform OpenMediaAndBind, should eventually trigger CanPlay
+startStop.addEventListener('click', OpenMediaAndBind);
 
 
-function wait_for_playing() {
-  if (v.videoWidth == 0 || v.videoHeight == 0) {
-    // schedule to run again and quit
-    console.log('waiting');
-    setTimeout(wait_for_playing, 20);
+function OpenMediaAndBind() {
+  console_append('preparing video element');
+  // Prepare video element "needed for iOS 11"?
+  v.setAttribute('autoplay', 'true');
+  v.setAttribute('muted', 'true');
+  v.setAttribute('playsinline', 'true');
+  
+  // define constraints based on selected video
+  let deviceId = camOptions.value;
+  console_append('constraining to deviceId ' + deviceId);
+  let idealsize = false ? 4096 : 640;
+  let constraints = { video: { deviceId: { exact: deviceId }, width: { ideal: idealsize }, height: { ideal: idealsize } } };
+  // console.log(constraints);
+  navigator.mediaDevices.getUserMedia(constraints).then(function(stream) {
+    console_append('getUserMedia finished, binding stream to element');
+    v.srcObject = stream;
+    console.log(v);
+    console_append('video dimensions (1): ' + v.videoWidth + 'x' + v.videoHeight);
+    console_append('OpenMediaAndBind not invoking v.play (proceed upon canplay callback)');
+  })
+  .catch(function (err) {
+      console_append('error occurred with getUserMedia promise: ' + err);
+      console.log("An error occurred! " + err);
+  });
+  return;
+}
+
+v.addEventListener('canplay', () => CanPlayOccurred());
+
+
+function CanPlayOccurred() {
+  let videoPlaying = v.currentTime > 0 && !v.paused && !v.ended && v.readyState > 2;
+  if (videoPlaying) {
+    // with autoplay attribute enabled, this tends to happen
+    console_append('video dimensions (3): ' + v.videoWidth + 'x' + v.videoHeight);
+    console_append('canplay: video already playing, doing nothing');
     return;
   }
-  console.log('video nonempty');
+  
+  console_append('canplay: attempting to play');
+  console_append('video dimensions (4): ' + v.videoWidth + 'x' + v.videoHeight);
+  v.play().then(function () {
+    console_append('canplay: completed play()');
+  }).catch(function (err) {
+    console_append('canplay: error in play(): ' + err);
+  });
+}
+
+
+v.addEventListener('play', () => PlayOccurred());
+v.addEventListener('ended', () => console_append('ended event received'));
+
+function PlayOccurred() {
+  console_append('video dimensions (5): ' + v.videoWidth + 'x' + v.videoHeight);
+  if (v.videoWidth > v.videoHeight) {
+    console_append('width greater than height, probably desktop or landscape mode');
+  }
+  else {
+    console_append('height greater than or equal to width, probably mobile in portrait mode');
+  }
 
   vw = v.videoWidth;
   vh = v.videoHeight;
-  
-  // it seems that cv.VideoCapture uses height and width, not videoHeight or videoWidth
-  v.height = vh;
-  v.width = vw;
-  
+
   canvas.width = vw;    // set output canvas to match
   canvas.height = vh;
   back.width = vw;      // set backing canvas to match
   back.height = vh;
   
-  // Explicit pixel value handling
-  draw(v, context, backcontext, vw, vh);
+  // Start draw loop for pixel data handling
+  setTimeout(function(){ draw(v, context, backcontext, vw, vh); }, 20);
 }
 
-var constraints = {
-  video: {
-    width: 640,
-    height: 480,
-    facingMode : "environment",
-  },
-};
+stopButton.addEventListener('click', TearDown);
 
-// event kicks off waiting.  Waiting reschedules itself until video has nonzero size
-v.addEventListener('play', wait_for_playing, false);
+function TearDown() {
+  v.pause();  // pausing will cause draw to quit even if the other options don't
 
-
-// add listener to button to start/stop the video
-var vid_playing = false;
-var startStop = document.getElementById('startAndStop');
-startStop.addEventListener('click', () => {
-  console.log('startstop clicked');
-  if (vid_playing) {
-    v.pause();
-    vid_playing = false;
+  try {
+    v.srcObject = null;
+  } catch (err) {
+    v.src = '';
   }
-  else if (v.srcObject != null) {  // just unpause
-    v.play();
-    vid_playing = true;
-  }
-  else {
-    //navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-    navigator.mediaDevices.getUserMedia(constraints)
-    .then(function(stream) {
-        v.srcObject = stream;
-        v.play();
-        vid_playing = true;
-    })
-    .catch(function(err) {
-        console.log("An error occurred! " + err);
-    });
-  }
-});
+  v.removeAttribute('src');
+}
 
 
-// Non-CV method handles pixels explicitly
 function draw(v,c,bc,w,h) {
-  if (v.paused || v.ended) {
+  let videoPlaying = v.currentTime > 0 && !v.paused && !v.ended && v.readyState > 2;
+  if (!videoPlaying) {
+    console_append('no longer playing, stopping draw loop');
     return false;  // stop looping, (can restart with new 'play' callback on video)
   }
   
@@ -93,17 +158,17 @@ function draw(v,c,bc,w,h) {
   bc.drawImage(v,0,0,w,h);
   
   // Grab the pixel data from the backing canvas
-  var idata = bc.getImageData(0,0,w,h);
-  var data = idata.data;
+  let idata = bc.getImageData(0,0,w,h);
+  let data = idata.data;
   
   if (false) {
     // javascript method
     // Loop through the pixels, turning them grayscale
-    for(var i = 0; i < data.length; i+=4) {
-      var r = data[i];
-      var g = data[i+1];
-      var b = data[i+2];
-      var brightness = (3*r+4*g+b)>>>3;
+    for(let i = 0; i < data.length; i+=4) {
+      let r = data[i];
+      let g = data[i+1];
+      let b = data[i+2];
+      let brightness = (3*r+4*g+b)>>>3;
       data[i] = brightness;
       data[i+1] = brightness;
       data[i+2] = brightness;
@@ -112,7 +177,7 @@ function draw(v,c,bc,w,h) {
   }
   else {
     // wasm method
-    var data2 = grayscale(data);
+    let data2 = grayscale(data);
     idata.data.set(data2);
   }
   
@@ -135,6 +200,16 @@ function grayscale(imageData) {
   return filteredImageData;
 };
 
+
+function console_append(x) {
+  let console = document.getElementById('console');
+  let newcontent = document.createElement('div');
+  newcontent.innerHTML = x + "\n";
+
+  while (newcontent.firstChild) {
+      console.appendChild(newcontent.firstChild);
+  }
+}
 </script>
 </body>
 </html>
